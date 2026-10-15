@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: incident-triage-copilot
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: fastmcp<3,>=2.13
+Requires-Dist: ollama
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"

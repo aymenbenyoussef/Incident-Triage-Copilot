@@ -1,0 +1,14 @@
+[project]
+name = "incident-triage-copilot"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["fastmcp>=2.13,<3", "ollama"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.setuptools]
+packages = ["sim", "servers", "agent", "evals"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

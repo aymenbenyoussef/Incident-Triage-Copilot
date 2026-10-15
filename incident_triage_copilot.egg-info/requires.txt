@@ -1,0 +1,6 @@
+fastmcp<3,>=2.13
+ollama
+
+[dev]
+pytest
+pytest-asyncio

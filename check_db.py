@@ -14,7 +14,9 @@ def main() -> None:
 
     with sqlite3.connect(DATABASE) as connection:
         cursor = connection.execute(
-            "SELECT * from metrics"
+            "SELECT ts, service, level, message "
+            "FROM logs "
+            "ORDER BY ts DESC"
         )
         rows = cursor.fetchall()
 

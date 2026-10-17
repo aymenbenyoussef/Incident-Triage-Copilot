@@ -1066,6 +1066,8 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY sim sim
 COPY servers servers
+COPY agent agent
+COPY evals evals
 RUN pip install --no-cache-dir .
 ENV HOST=0.0.0.0 PORT=8000 TRIAGE_DB=/data/prod.db
 EXPOSE 8000

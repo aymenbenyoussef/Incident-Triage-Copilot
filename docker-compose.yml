@@ -1,0 +1,12 @@
+services:
+  gateway:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      SCENARIO: bad_deploy
+      VIEWER_TOKEN: viewer-dev-token
+      ONCALL_TOKEN: oncall-dev-token
+    volumes:
+      - triage-data:/data
+volumes:
+  triage-data:

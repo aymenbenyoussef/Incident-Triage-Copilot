@@ -3,14 +3,20 @@ import json
 import os
 import sys
 
+import httpx
 import ollama
 from fastmcp import Client
 from fastmcp.client.elicitation import ElicitResult
 from fastmcp.exceptions import ToolError
 
+from agent.report import create_pdf_report
+
 URL = os.getenv("GATEWAY_URL", "http://localhost:8000/mcp")
 TOKEN = os.getenv("ONCALL_TOKEN", "oncall-dev-token")
 MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+MODEL_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
+TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "30"))
+MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "12"))
 TOOL_ALIASES = {
     "get_deployments": "list_recent_deploys",
     "get_recent_deploys": "list_recent_deploys",
@@ -29,12 +35,19 @@ Rules:
 - Use only web, api, or db as service values. Never invent parameters such as function, start, end, or namespace.
 - Only call restart_service or rollback_deploy if the evidence clearly supports it.
   A human will be asked to approve; never try to bypass that.
-- Finish with a report in exactly this format:
+- Finish with a report using exactly these headings, in this order. Do not omit
+  a heading; write "Unknown" when the evidence is insufficient:
 
+INCIDENT SUMMARY: ...
+SEVERITY: ...
+AFFECTED SERVICES: ...
 TIMELINE: ...
 ROOT CAUSE: ...
+CONFIDENCE: ...
 EVIDENCE: ...
+CUSTOMER IMPACT: ...
 RECOMMENDED ACTION: ...
+FOLLOW-UP INVESTIGATION: ...
 """
 
 
@@ -78,9 +91,24 @@ async def ask_human(message, response_type, params, context):
     return ElicitResult(action="decline")
 
 
-async def investigate(problem: str, token: str = TOKEN, handler=ask_human, max_steps: int = 10) -> dict:
+async def investigate(
+    problem: str,
+    token: str = TOKEN,
+    handler=ask_human,
+    max_steps: int = 10,
+    max_tool_calls: int = MAX_TOOL_CALLS,
+) -> dict:
     tool_calls = 0
-    async with Client(URL, auth=token, elicitation_handler=handler) as client:
+    tool_history: list[str] = []
+    async with (
+        Client(
+            URL,
+            auth=token,
+            elicitation_handler=handler,
+            timeout=TOOL_TIMEOUT_SECONDS,
+        ) as client,
+        ollama.AsyncClient(timeout=MODEL_TIMEOUT_SECONDS) as model_client,
+    ):
         tools = await client.list_tools()
         tool_names = {tool.name for tool in tools}
         schema = [{"type": "function",
@@ -91,7 +119,27 @@ async def investigate(problem: str, token: str = TOKEN, handler=ask_human, max_s
         last_service = None
 
         for _ in range(max_steps):
-            reply = ollama.chat(model=MODEL, messages=messages, tools=schema).message
+            if tool_calls >= max_tool_calls:
+                return {
+                    "report": (
+                        f"Investigation stopped after reaching the maximum of "
+                        f"{max_tool_calls} tool calls."
+                    ),
+                    "tool_calls": tool_calls,
+                    "tool_history": tool_history,
+                }
+
+            print("Waiting for the model...")
+            try:
+                reply = (
+                    await model_client.chat(model=MODEL, messages=messages, tools=schema)
+                ).message
+            except (httpx.TimeoutException, httpx.ConnectError, ollama.ResponseError) as error:
+                return {
+                    "report": f"Investigation stopped because the model was unavailable: {error}",
+                    "tool_calls": tool_calls,
+                    "tool_history": tool_history,
+                }
             messages.append(reply)
             calls = [(call.function.name, dict(call.function.arguments))
                      for call in (reply.tool_calls or [])]
@@ -104,26 +152,58 @@ async def investigate(problem: str, token: str = TOKEN, handler=ask_human, max_s
                     if mentioned_call:
                         calls = [mentioned_call]
             if not calls:
-                return {"report": reply.content, "tool_calls": tool_calls}
+                return {
+                    "report": reply.content,
+                    "tool_calls": tool_calls,
+                    "tool_history": tool_history,
+                }
 
             for name, args in calls:
+                if tool_calls >= max_tool_calls:
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": name,
+                        "content": (
+                            f"Tool call skipped: maximum of {max_tool_calls} "
+                            "tool calls reached."
+                        ),
+                    })
+                    break
                 if name == "list_recent_deploys" and "service" not in args and last_service:
                     args["service"] = last_service
                 if isinstance(args.get("service"), str):
                     last_service = args["service"]
                 tool_calls += 1
+                tool_history.append(name)
                 print(f"-> {name}({args})")
                 try:
-                    res = await client.call_tool(name, args)
+                    res = await asyncio.wait_for(
+                        client.call_tool(name, args),
+                        timeout=TOOL_TIMEOUT_SECONDS,
+                    )
                     out = "\n".join(c.text for c in res.content if hasattr(c, "text"))
+                    print(f"<- {name} completed")
+                except asyncio.TimeoutError:
+                    out = f"Tool error: {name} timed out after {TOOL_TIMEOUT_SECONDS:g}s."
+                    print(f"<- {name} timed out")
                 except ToolError as e:
                     out = f"Tool error: {e}"
                 messages.append({"role": "tool", "tool_name": name, "content": out})
 
-    return {"report": "Stopped: step limit reached without a conclusion.", "tool_calls": tool_calls}
+    return {
+        "report": "Stopped: step limit reached without a conclusion.",
+        "tool_calls": tool_calls,
+        "tool_history": tool_history,
+    }
 
 
 if __name__ == "__main__":
     problem = sys.argv[1] if len(sys.argv) > 1 else "The API is slow and checkout is failing."
     result = asyncio.run(investigate(problem))
     print("\n" + result["report"])
+    try:
+        report_path = create_pdf_report(problem, result["report"], result["tool_calls"])
+    except (OSError, RuntimeError) as error:
+        print(f"\nUnable to create PDF report: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+    print(f"\nPDF report saved to {report_path}")

@@ -2,6 +2,7 @@ README.md
 pyproject.toml
 agent/__init__.py
 agent/agent.py
+agent/report.py
 evals/__init__.py
 evals/run_evals.py
 incident_triage_copilot.egg-info/PKG-INFO
@@ -19,3 +20,4 @@ tests/test_actions.py
 tests/test_gateway.py
 tests/test_injection.py
 tests/test_observe.py
+tests/test_report.py

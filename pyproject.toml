@@ -2,7 +2,7 @@
 name = "incident-triage-copilot"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["fastmcp>=2.13,<3", "ollama"]
+dependencies = ["fastmcp>=2.13,<3", "ollama", "reportlab>=4.0,<5"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]

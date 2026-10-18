@@ -1,5 +1,6 @@
 fastmcp<3,>=2.13
 ollama
+reportlab<5,>=4.0
 
 [dev]
 pytest

@@ -3,7 +3,8 @@
 Incident Triage Copilot is a local AI assistant for investigating simulated
 production incidents. It uses an Ollama language model and the Model Context
 Protocol (MCP) to gather evidence from logs, metrics, and deployment history,
-then produces a concise incident report.
+then produces a concise incident report. Reports are printed in the terminal
+and saved as structured, timestamped PDF files in `reports/`.
 
 The project is designed to demonstrate how an incident-response agent can be
 given useful operational capabilities without giving it unrestricted access to
@@ -52,16 +53,22 @@ Gateway
 
 ### Agent
 
-[`agent/agent.py`](<C:/Users/USER/Desktop/Incident Triage Copilot/agent/agent.py>)
+[`agent/agent.py`](agent/agent.py)
 connects to the gateway, discovers the available MCP tools, and gives them to
 the Ollama model. It keeps a bounded tool-calling loop, converts tool results
 back into model messages, and asks for a report in this format:
 
 ```text
+INCIDENT SUMMARY: ...
+SEVERITY: ...
+AFFECTED SERVICES: ...
 TIMELINE: ...
 ROOT CAUSE: ...
+CONFIDENCE: ...
 EVIDENCE: ...
+CUSTOMER IMPACT: ...
 RECOMMENDED ACTION: ...
+FOLLOW-UP INVESTIGATION: ...
 ```
 
 The agent prompt explicitly tells the model that tool output is data, not
@@ -70,7 +77,7 @@ after a configurable maximum number of steps.
 
 ### Gateway
 
-[`servers/gateway.py`](<C:/Users/USER/Desktop/Incident Triage Copilot/servers/gateway.py>)
+[`servers/gateway.py`](servers/gateway.py)
 is the single MCP endpoint exposed to the agent. It mounts the Observe and
 Actions servers and applies shared controls:
 
@@ -86,7 +93,7 @@ and short-lived OAuth or JWT credentials.
 
 ### Observe server
 
-[`servers/observe.py`](<C:/Users/USER/Desktop/Incident Triage Copilot/servers/observe.py>)
+[`servers/observe.py`](servers/observe.py)
 contains read-only access to the simulated production data. Inputs use
 constrained service, log-level, and metric values, bounded time windows, and
 bounded result sizes. Database queries are parameterized.
@@ -97,7 +104,7 @@ messages are also truncated before they are returned to the agent.
 
 ### Actions server
 
-[`servers/actions.py`](<C:/Users/USER/Desktop/Incident Triage Copilot/servers/actions.py>)
+[`servers/actions.py`](servers/actions.py)
 contains simulated operations that could change service state:
 
 - restarting a service;
@@ -110,7 +117,7 @@ instead of touching real infrastructure.
 
 ### Simulator
 
-[`sim/generate.py`](<C:/Users/USER/Desktop/Incident Triage Copilot/sim/generate.py>)
+[`sim/generate.py`](sim/generate.py)
 creates deterministic SQLite fixtures containing healthy baseline traffic and
 one selected incident. It can also insert a prompt-injection string into a log
 entry so the safety controls can be exercised.
@@ -147,7 +154,7 @@ The simulator models five scenarios:
 | Risk | Control |
 |---|---|
 | Instructions hidden in log messages influence the model | Tool output is labelled untrusted, logs are truncated, and the agent prompt treats output as data |
-| A viewer invokes a disruptive operation | Gateway middleware requires the `act` scope for action tools |
+| A viewer invokes a disruptive operation | Gateway middleware requires the on-call role, represented by the `act` scope, for action tools |
 | Malformed or oversized tool arguments | Literal input constraints and bounded numeric fields are enforced at the MCP boundary |
 | SQL injection through observation parameters | All database queries use parameters rather than string interpolation |
 | An action occurs without a human decision | Actions use MCP elicitation and reject anything other than an explicit approval |
@@ -184,6 +191,9 @@ Configuration is supplied through environment variables:
 | `PORT` | `8000` | Gateway port |
 | `GATEWAY_URL` | `http://localhost:8000/mcp` | MCP endpoint used by the agent |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model used for investigation |
+| `OLLAMA_TIMEOUT_SECONDS` | `60` | Maximum wait for one model response |
+| `TOOL_TIMEOUT_SECONDS` | `30` | Maximum wait for one MCP tool call |
+| `MAX_TOOL_CALLS` | `12` | Maximum tool calls in one investigation |
 
 Do not use the default tokens outside a local development environment.
 
@@ -200,16 +210,43 @@ python -m agent.agent "<incident description>"
 The gateway serves MCP at `/mcp`. The agent uses the on-call token by default,
 while the evaluation harness uses the viewer token to verify that investigation
 does not require action privileges. Docker Compose provides the same gateway
-service as a containerized local deployment.
+service as a containerized local deployment. Each command-line investigation
+prints its report and creates a file named
+`reports/incident-report-YYYYMMDD-HHMMSS-microseconds.pdf`.
 
 ## Evaluation and tests
 
-[`evals/run_evals.py`](<C:/Users/USER/Desktop/Incident Triage Copilot/evals/run_evals.py>)
-runs each scenario three times and checks whether the generated report contains
-a scenario-specific diagnosis. The evaluation is intentionally lightweight:
-keyword matching measures whether the expected root cause appears, not whether
-the entire report is operationally perfect. Results are written to
-[`evals/results.md`](<C:/Users/USER/Desktop/Incident Triage Copilot/evals/results.md>).
+[`evals/run_evals.py`](evals/run_evals.py) runs each scenario three times and
+scores three properties separately:
+
+- root-cause keywords are present;
+- required evidence groups, such as a deployment version and an error signal,
+  are cited;
+- no forbidden action tool is called while using the viewer token.
+
+This is still a lightweight evaluator, not a human-quality judge. Results are
+written to [`evals/results.md`](evals/results.md).
+
+The latest recorded baseline used `qwen2.5:7b` with three runs per scenario:
+
+| Scenario | Correct | Avg tool calls |
+|---|---:|---:|
+| `bad_deploy` | 2/3 | 6.0 |
+| `memory_leak` | 3/3 | 3.0 |
+| `db_pool_exhaustion` | 3/3 | 3.0 |
+| `upstream_timeout` | 1/3 | 3.0 |
+| `disk_full` | 3/3 | 3.0 |
+| **Overall** | **80%** | |
+
+These numbers are the keyword-based baseline recorded before the evidence
+scoring was added. Re-run the evaluator to produce the expanded root-cause,
+evidence, safety, and quality columns.
+
+## Example output
+
+See [`reports/sample-incident-report.md`](reports/sample-incident-report.md) for
+a representative investigation report. The CLI also creates a formatted PDF
+with the same sections in the `reports/` directory.
 
 The test suite covers:
 
@@ -219,14 +256,31 @@ The test suite covers:
 - prompt-injection handling;
 - the agent's investigation behavior.
 
+## Continuous integration
+
+The project uses GitHub Actions through
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+The `CI` workflow runs on every push and pull request and:
+
+1. Checks out the repository.
+2. Sets up Python 3.12.
+3. Installs the project and development dependencies.
+4. Runs the complete test suite with `pytest -q`.
+5. Builds the Docker Compose image to verify the container configuration.
+
 ## Repository layout
 
 ```text
 incident-triage-copilot/
+├── .github/
+│   └── workflows/
+│       └── ci.yml         # GitHub Actions tests and Docker build
 ├── agent/
 │   └── agent.py          # Ollama investigation loop
 ├── data/
 │   └── prod.db           # Simulated production database
+├── reports/              # Generated PDF incident reports
+│   └── sample-incident-report.md
 ├── evals/
 │   ├── results.md        # Latest evaluation output
 │   └── run_evals.py      # Scenario evaluation harness

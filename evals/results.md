@@ -1,3 +1,6 @@
+Model: `qwen2.5:7b`
+Runs per scenario: `3`
+
 | Scenario | Correct | Avg tool calls |
 |---|---|---|
 | bad_deploy | 2/3 | 6.0 |
